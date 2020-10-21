@@ -1,0 +1,595 @@
+---
+title: "Coronavirus Dashboard"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: rows
+    vertical_layout: fill
+    runtime: shiny
+    theme: cerulean
+    social: ["twitter","facebook","menu"]
+---
+
+```{r setup, include=FALSE}
+# ---Importing all libraries at once using lapply function on require function.---
+x=c('tidyr','dplyr',"ggplot2","lubridate","mgsub","gsubfn","tidyverse","coronavirus",'ggmap','ggrepel',"devtools","magrittr","rvest","knitr","rpivotTable","plotly","openintro","highcharter","RColorBrewer","ggiraph","shiny","flexdashboard","leaflet","DT","rgdal","treemap","d3treeR","shinydashboard","gganimate")
+lapply(x, require, character.only = TRUE)
+library(flexdashboard)
+
+# ---Importing remotes package to install d3treeR package which is not available through CRAN---
+remotes::install_github("d3treeR/d3treeR")
+
+# ---knitr is used set the working directory as setwd() cannot be run in RMD
+knitr::opts_knit$set(root.dir = 'D:\\CIT\\Sem2\\Data_Visualisation\\Datasets\\Coronavirus\\COVID-19\\csse_covid_19_data\\csse_covid_19_daily_reports')
+
+opts_chunk$set(root.dir=normalizePath('D:\\CIT\\Sem2\\Data_Visualisation\\Datasets\\Coronavirus\\COVID-19\\csse_covid_19_data\\csse_covid_19_daily_reports'))
+filenames <- gsub("\\.csv$","", list.files(pattern="\\.csv$"))
+filenames
+# ---importing latitude and longitude files to get the exact location of all the unique records from the dataset---
+lat_lon=read.csv('D:\\CIT\\Sem2\\Data_Visualisation\\Datasets\\Coronavirus\\Flex\\latlon-countries\\lat_long.csv')
+
+corona_15_3=read.csv("D:\\CIT\\Sem2\\Data_Visualisation\\Datasets\\Coronavirus\\COVID-19\\csse_covid_19_data\\csse_covid_19_daily_reports\\03-22-2020.csv")
+
+#--- Preprocessing the Data ---
+last_update=max(as.Date(corona_15_3$Last.Update))
+
+#--- Summarising the datasets based on death, recovered and confirmed cases by grouping on country---
+corona_summary=corona_15_3 %>% group_by(Country.Region) %>% 
+  summarise(Latitude=mean(Latitude), Longitude=mean(Longitude),
+            Cases=sum(Confirmed), Death=sum(Deaths), Recovered=sum(Recovered))
+
+# ---After finding all the unique countries, we are left joining to latitude and longitude in order to fetch the latitude and longitude values
+corona_data=left_join(corona_summary,lat_lon,by='Country.Region')
+
+# cleaning the corona_data 
+corona_data=corona_data %>% subset(!(Country.Region %in% c("Cruise Ship","Republic of the Congo","Reunion","The Gambia")))
+drop_names=c('Latitude','Longitude')
+corona_data=corona_data[,!(names(corona_data)%in%drop_names)]
+corona_data$Country.Region=as.factor(corona_data$Country.Region)
+
+```
+
+```{r}
+# setting the default colours
+mycolors=c("blue","#FFC125","darkgreen","darkorange")
+```
+Overview
+========================================
+
+
+Row
+----------------------------------------
+### Confirmed Cases
+
+```{r}
+
+#--- Using valueBox function, we are placing the summary data values at top panel.
+flexdashboard::valueBox(value = sum(corona_summary$Cases),
+         icon="fas fa-ambulance",
+         color = 'primary')
+```
+
+### Death Cases
+
+```{r}
+#--- Using valueBox function, we are placing the summary data values at top panel.
+flexdashboard::valueBox(sum(corona_summary$Death),color = 'red',icon = "fas fa-procedures")
+#fas fa-procedures   fas fa-user-alt-slash
+```
+
+### Recovered Cases
+
+```{r}
+#--- Using valueBox function, we are placing the summary data values at top panel.
+flexdashboard::valueBox(sum(corona_summary$Recovered),color = 'aqua',icon = "fas fa-file-medical-alt")
+```
+
+### Countries Affected
+
+```{r}
+#--- Using valueBox function, we are placing the summary data values at top panel.
+flexdashboard::valueBox(length(unique(corona_summary$Country.Region)),color = 'lightgreen',
+                        icon = "far fa-globe-americas")
+# icon=fa-thumbs-down, fas fa-globe,
+```
+
+### Interactive World map with cases
+----------------------------------------
+```{r}
+# ---Creating a Shiny app Using UI & Server functionin---
+
+# UI will be user interactive dashboard
+ui <- fluidPage(
+  mainPanel(
+    #Leafletoutput will create a space to display  world map
+    leafletOutput(outputId = "mymap"),
+    #It will allow to put the checkmarks ontop of the world map to view Death, recovered cases around the world with variation in color
+    absolutePanel(top = 60, left = 20,
+                  checkboxInput("Death", "Death", FALSE),
+                  checkboxInput("Recovered", "Recovered", FALSE)
+    )
+  ))
+
+# Server based function 
+server <- function(input, output, session) {
+  #It will define the color pallate for the death, recovered cases
+  pal <- colorNumeric(
+    palette = c('gold', 'orange', 'dark orange', 'orange red', 'red', 'dark red'),
+    domain = corona_data$Death)
+
+
+  #It will define the color pallate for the death, recovered cases
+  pal2 <- colorFactor(
+    palette = c('blue', 'yellow', 'red'),
+    domain = corona_data$Recovered
+  )
+
+  #It will create the world map
+  output$mymap <- renderLeaflet({
+    leaflet(corona_data) %>%
+      setView(lng = 12.5674, lat = 41.8719, zoom = 2)  %>% #setting the view over ~ center of Europe, Italy
+      addTiles() %>%
+      addCircles(data = corona_data, lat = ~ latitude, lng = ~ longitude, weight = 1,
+                 radius = ~sqrt(Death)*2500, popup = ~as.character(Death),
+                 label = ~as.character(paste0("Country: ",Country.Region," | ",#sep = "\n",
+                                              "Cases: ",Cases," | ",#sep = "\n",
+                                              "Death's: ", Death," | ",#sep = "\n",
+                                              "Recovered: ",Recovered,sep = " || ",
+                                              "Last Update: ",last_update)),
+                 color = ~pal(Death), fillOpacity = 0.5)
+  })
+  # observe function is used to make the checkboxes dynamic. If this part is left out, it can be observethat the checkboxes when clicked on the first time, display filters...But if uncheck, they stay on. So server needs to update the map when the checkboxes are unchecked.
+  observe({
+    proxy <- leafletProxy("mymap", data = corona_data)
+    proxy %>% clearMarkers()
+    if (input$Recovered) {
+      proxy %>% addCircleMarkers(stroke = FALSE, color = ~pal2(Recovered), fillOpacity = 0.2,
+                                 label = ~as.character(paste0("Country: ", Country.Region," | ","Recovered: ", Recovered,
+                                                              " || ","Last Update: ",last_update))) %>%
+        addLegend("bottomright", pal = pal2, values = corona_data$Recovered,
+                  title = "Depth Type",
+                  opacity = 1)}
+    else {
+      proxy %>% clearMarkers() %>% clearControls()
+    }
+  })
+
+  observe({
+    proxy <- leafletProxy("mymap", data = corona_data)
+    proxy %>% clearMarkers()
+    if (input$Death) {
+      proxy %>%  addCircleMarkers(stroke = FALSE, color = ~pal2(Death), fillOpacity = 0.2,
+                                  label = ~as.character(paste0("Country: ", Country.Region," | ","Death: ", Death,
+                                                               " || ","Last Update: ",last_update))) %>%
+        addLegend("bottomright", pal = pal2, values = corona_data$Death,
+                  title = "Depth Type",
+                  opacity = 1)}
+    else{
+      proxy %>% clearMarkers() %>% clearControls()
+    }
+  })
+}
+
+# Finally calling the ShinyApp function to integrate UI and Server fuction.
+shinyApp(ui, server)
+```
+
+
+```{r}
+# Data preprocessing for showing the table using Data Table.
+my_table=corona_summary %>% select(-c("Latitude","Longitude")) %>%  arrange(-Death) %>% as.data.frame()
+
+# Creating the Color palat for table
+brks <- quantile(my_table[2:4], probs = seq(.05, .95, .05), na.rm = TRUE)
+clrs <- round(seq(255, 40, length.out = length(brks) + 1), 0) %>% {paste0("rgb(255,", ., ",", ., ")")}
+# Using DT to view the data frame on Dashboard
+datatable(my_table) %>% formatStyle(names(my_table), backgroundColor = styleInterval(brks, clrs))
+```
+
+
+Animation
+========================================
+### ***Number of Death w.r.t time***
+
+----------------------------------------
+```{r include=FALSE}
+# Setting the local path directory
+filenames <- gsub("\\.csv$","", list.files(pattern="\\.csv$"))
+
+# creating empty data frame to be filled in below code
+top_countries_Death=data.frame(Country.Region=NULL,Total_Death=NULL)
+top_countries_Recovered=data.frame(Country.Region=NULL,Total_Recovered=NULL)
+All_countries_Recovered=data.frame(Country.Region=NULL,Total_Recovered=NULL,Total_Death=NULL,Total_Cases=NULL,Last_Update=NULL)
+# Calling all the files of Coronavirus which is updated each day and creating two data frames out of them
+for(i in filenames){
+  loop_df = read.csv(paste(i, ".csv", sep=""))
+  top_countries_Death=rbind(top_countries_Death,loop_df %>% group_by(Country.Region)%>%summarise(Total_Death=sum(Deaths),Last_Update=rep(i,1)) %>% 
+                        top_n(n = 10,wt = Total_Death) %>% mutate(Rank_Death=rank(-Total_Death)) %>% 
+                        as.data.frame() %>% arrange(-Total_Death))
+  
+  top_countries_Recovered=rbind(top_countries_Recovered,loop_df %>% group_by(Country.Region)%>%
+                                  summarise(Total_Recovered=sum(Recovered),
+                                            Total_Death=sum(Deaths),
+                                            Total_Cases=sum(Confirmed),
+                                            Last_Update=rep(i,1)) %>% 
+                        top_n(n = 10,wt = Total_Recovered) %>% mutate(Rank_Death=rank(-Total_Recovered)) %>% 
+                        as.data.frame() %>% arrange(-Total_Recovered))
+  
+  All_countries_Recovered=rbind(All_countries_Recovered,loop_df %>% group_by(Country.Region)%>%
+                                  summarise(Total_Recovered=sum(Recovered),
+                                            Total_Death=sum(Deaths),
+                                            Total_Cases=sum(Confirmed),
+                                            Last_Update=rep(i,1)) %>%  
+                        as.data.frame() %>% arrange(-Total_Death))
+}
+
+# Cleaning the new df
+top_countries_Death$Country.Region=gsub("Mainland ","",top_countries_Death$Country.Region)
+top_countries_Recovered$Country.Region=gsub("Mainland ","",top_countries_Recovered$Country.Region)
+
+# Converting the character class into date
+top_countries_Death$Last_Update=as.Date(top_countries_Death$Last_Update, "%m-%d-%y")
+top_countries_Death_1=top_countries_Death %>% filter(month(Last_Update)==3) %>% mutate(Day=day(Last_Update), Month=month(Last_Update)) %>% select(-c("Last_Update"))
+
+top_countries_Recovered$Last_Update=as.Date(top_countries_Recovered$Last_Update, "%m-%d-%y")
+top_countries_Recovered_1=top_countries_Recovered %>% filter(month(Last_Update)==3) %>% mutate(Day=day(Last_Update), Month=month(Last_Update)) %>% select(-c("Last_Update"))
+```
+```{r}
+#--Animation+Transition plot on Death rate
+
+anim_death <- ggplot(top_countries_Death_1, aes(Rank_Death, group = Country.Region, fill=Country.Region)) + geom_tile(aes(y = Total_Death/2,
+                                                                                     height = Total_Death,
+                                                                                     width = 0.9), alpha = 0.8, color = NA) +
+  geom_text(aes(y = 0, label = paste(Country.Region, " ")), vjust = 0.2, hjust = 1, size = 7) + 
+  #Below code determines size of the country label
+  geom_text(aes(y=Total_Death,label = paste(Total_Death, " "), hjust=0),size = 8 ) +  
+  #determine size of the Death value label
+  coord_flip(clip = "off", expand = TRUE) +
+  scale_x_reverse() +
+  theme_minimal() +
+  theme(axis.line=element_blank(),
+        axis.text.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks=element_blank(),
+        axis.title.x=element_blank(),
+        axis.title.y=element_blank(),
+        legend.position="none",
+        panel.background=element_blank(),
+        panel.border=element_blank(),
+        panel.grid.major=element_blank(),
+        panel.grid.minor=element_blank(),
+        panel.grid.major.x = element_line( size=.1, color="grey" ),
+        panel.grid.minor.x = element_line( size=.1, color="grey" ),
+        plot.title=element_text(size=25, hjust=0.5, face="bold", colour="red", vjust=-1),
+        plot.subtitle=element_text(size=18, hjust=0.5, face="italic", color="red"),
+        plot.caption =element_text(size=12, hjust=0.5, face="italic", color="red"),
+        plot.background=element_blank(),
+        plot.margin = margin(1,4, 1, 8, "cm")) +
+  transition_states(Day, transition_length = 4, state_length = 1) +
+  ease_aes('sine-in-out') +
+  labs(title = 'Coronavirus Death Rate \n {frame_time}th March',  
+       caption  = "Corona Virus")+
+  transition_time(Day)
+
+# Finally animate function is used to call the GIF file
+animate(anim_death)
+# animate(anim, nframes = 350,fps = 25,  width = 1200, height = 1000,
+#         renderer = gifski_renderer("corona_Death.gif"))
+```
+
+
+### ***Number of Recovered w.r.t time***
+
+```{r}
+#--Animation+Transition plot on Death rate
+anim_recovered <- ggplot(top_countries_Recovered_1, aes(Rank_Death, group = Country.Region, fill=Country.Region)) + geom_tile(aes(y = Total_Recovered/2,
+                                                                                                                        height = Total_Recovered,
+                                                                                                                        width = 0.9), alpha = 0.8, color = NA) +
+  geom_text(aes(y = 0, label = paste(Country.Region, " ")), vjust = 0.2, hjust = 1, size = 7) + 
+  #Below code determines size of the country label
+  geom_text(aes(y=Total_Recovered,label = paste(Total_Recovered, " "), hjust=0),size = 8 ) +  
+  #determine size of the Recovered value label
+  coord_flip(clip = "off", expand = TRUE) +
+  scale_x_reverse() +
+  theme_minimal() +
+  theme(axis.line=element_blank(),
+        axis.text.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks=element_blank(),
+        axis.title.x=element_blank(),
+        axis.title.y=element_blank(),
+        legend.position="none",
+        panel.background=element_blank(),
+        panel.border=element_blank(),
+        panel.grid.major=element_blank(),
+        panel.grid.minor=element_blank(),
+        panel.grid.major.x = element_line( size=.1, color="grey" ),
+        panel.grid.minor.x = element_line( size=.1, color="grey" ),
+        plot.title=element_text(size=25, hjust=0.5, face="bold", colour="red", vjust=-1),
+        plot.subtitle=element_text(size=18, hjust=0.5, face="italic", color="red"),
+        plot.caption =element_text(size=12, hjust=0.5, face="italic", color="red"),
+        plot.background=element_blank(),
+        plot.margin = margin(1,4, 1, 8, "cm")) +
+  transition_states(Day, transition_length = 4, state_length = 1) +
+  ease_aes('sine-in-out') +
+  labs(title = 'Coronavirus Recovered Rate \n {frame_time}th March',  
+       caption  = "Corona Virus")+
+  transition_time(Day)
+# Finally animate function is used to call the GIF file
+animate(anim_recovered)
+```
+
+Data Distribution
+========================================
+
+----------------------------------------
+### ***World Map Cases Distribution***
+
+```{r}
+
+# World map is called using Google Static MAP API.
+# install_github("dkahle/ggmap", ref = "tidyup", force=TRUE)
+# ggmap(get_googlemap())
+
+-----## Static map api key is generated which requires google api credentials----
+#please get an API key from google. Register 1 year for year and run below line of code
+
+# register_google(key = "pls enter your google api key here")
+# corona_duplicate=corona_15_3[!duplicated(corona_15_3$Country.Region),]
+# 
+# #Google Map API on where all the virus has been spread.
+# p <- ggmap(get_googlemap(center = c(lon = -7.6921, lat = 53.1424),
+#                          zoom = 2, scale = 2,source='google',
+#                          maptype ='terrain',
+#                          color = 'color'),extent = 'device')
+# p + geom_point(aes(x = Longitude, y = Latitude), data = corona_duplicate, size = 0.5) + 
+#   theme(legend.position="bottom")
+```
+
+Column{data-width=600}
+
+----------------------------------------
+### ***Area plot of Death, Confirmed & Recovered Cases over the time***
+
+```{r}
+# Area plot Preprocessing
+date_count_plot=top_countries_Recovered %>% group_by(Last_Update) %>% summarise(Daily_Death=sum(Total_Death,na.rm=T),
+                                                                                Daily_Recovered=sum(Total_Recovered,na.rm=T),
+                                                                                Daily_Confirmed=sum(Total_Cases,na.rm=T)) %>% 
+  as.data.frame()
+
+# Converting the Wide data into long
+date_count_plot_1=date_count_plot %>% gather("Daily_Cases", "Counts", -Last_Update)
+
+# Used plotly library to create area plot
+den_fig <- plot_ly(data =date_count_plot_1, x = ~Last_Update, y = ~Counts, 
+               fill = 'tozeroy',type = 'scatter', mode = 'lines',color = ~Daily_Cases)
+den_fig <- den_fig %>% layout(xaxis = list(title = 'Count'),
+                      yaxis = list(title = 'Count'))
+den_fig
+```
+
+Lines & Stacked Bar plot
+========================================
+
+Column {.sidebar data-width=500}
+-------------------------------------
+### ***Bar Plot of number of Death's based on country***
+```{r}
+# Bar Plot of number of Death's based on country
+
+stack_barplot=top_countries_Death %>% group_by(Last_Update) %>% top_n(n=20,wt=Total_Death)
+# Used plotly library to create Bar plot
+bar_fig <- plot_ly(stack_barplot, x = ~Last_Update, y = ~Total_Death, type = 'bar', name =~Country.Region ,color = ~Country.Region)
+bar_fig <- bar_fig %>% layout(yaxis = list(title = 'Death Count'), barmode = 'stack')
+bar_fig
+```
+
+Row {data-height=650}
+-------------------------------------
+### ***Number of mortality rate per 100 confirmed Death & Recovered***
+```{r}
+# Number of mortality rate per 100 confirmed death & recovered
+date_mortality_plot=date_count_plot
+date_mortality_plot['Death_Rate']=round(date_mortality_plot$Daily_Death/date_mortality_plot$Daily_Confirmed,3)*100
+date_mortality_plot['Recovered_Rate']=round(date_mortality_plot$Daily_Recovered/date_mortality_plot$Daily_Confirmed,3)*100
+
+# Used plotly library to create Line plot
+mortality_fig <- plot_ly(date_mortality_plot, x = ~Last_Update) 
+mortality_fig <- mortality_fig %>% add_trace(y = ~Death_Rate, name = 'Death Rate',mode = 'lines') 
+mortality_fig <- mortality_fig %>% add_trace(y = ~Recovered_Rate, name = 'Recovered Rate', mode = 'lines') 
+mortality_fig
+```
+
+Row {data-height=650}
+-------------------------------------
+### ***Number of China Province Cases***
+```{r}
+# China Province
+# Preprocessing on China province comparison
+corona_15_3$Country.Region=gsub("Mainland ","",corona_15_3$Country.Region)
+china_df=corona_15_3[which(corona_15_3$Country.Region=="China"),]
+china_df$Province.State=as.character(china_df$Province.State)
+
+china_df=china_df %>% select(-c("Country.Region","Latitude","Longitude","Last.Update")) %>% 
+  gather("Cases_Category","Cases_Count",-Province.State)
+
+# Used plotly library to create Stack bar plot
+china_fig <- plot_ly(china_df, x = ~Cases_Count, y = ~as.factor(Province.State), type = 'bar', name =~Cases_Category ,color = ~Cases_Category)
+china_fig <- china_fig %>% layout(yaxis = list(title = 'Count'), barmode = 'stack')
+china_fig
+```
+
+Grouped Bar plot
+========================================
+Column {.sidebar data-width=650}
+-------------------------------------
+### ***Line plot of Confirmed cases on different countries***
+```{r}
+#--- Face_wrap plot: Matrix plot using geom_line plot of ggplot2 library
+
+facet_grid_df=top_countries_Recovered %>% filter(Rank_Death>=1 & Rank_Death<=5)
+ggplot(data = facet_grid_df, aes(Last_Update, Total_Cases)) +
+  geom_line(color = "steelblue", size = 1) +
+  labs(title = "New cases plot of different countries",
+       subtitle = "(Corona Cases)",
+       y = "New Confirmed cases", x = "Date") + 
+  facet_wrap(~ Country.Region,scales = "free",nrow = 4)
+```
+
+Row {data-height=650}
+-------------------------------------
+### ***Analysing China, Italy & Rest of the world Bar Plot***
+```{r}
+# Preprocessing on China, Italy & Rest of the world
+
+RestWorld_df=corona_summary %>% filter(!Country.Region %in% c("China","Italy"))
+
+RestWorld_df=RestWorld_df %>% select(Cases,Death,Recovered) %>% summarise(Cases=sum(Cases),
+                                                                          Death=sum(Death),
+                                                                          Recovered=sum(Recovered)) %>% 
+  mutate(Country.Region="Rest of the World")
+RestWorld_df=rbind(RestWorld_df,corona_summary[which(corona_summary$Country.Region %in% c("China","Italy")),
+                                               c("Cases","Death","Recovered","Country.Region")])
+
+# traces of plotly is used to add three cases Viz. Death, Confirmed and Recovered cases
+restworld_plot <- RestWorld_df %>% plot_ly()
+restworld_plot <- restworld_plot %>% add_trace(x = ~Cases, y = ~Country.Region, type = 'bar',
+                         text = "Cases", textposition = 'auto',
+                         name="Cases"
+                         # marker = list(color = 'rgb(158,202,225)',
+                         #               line = list(color = 'rgb(8,48,107)', width = 1.5))
+                         )
+restworld_plot <- restworld_plot %>% add_trace(x = ~Death, y = ~Country.Region, type = 'bar',
+                         text = "Death", textposition = 'auto',
+                         name="Death"
+                         # marker = list(color = 'rgb(58,200,225)',
+                         #               line = list(color = 'rgb(8,48,107)', width = 1.5))
+                         )
+restworld_plot <- restworld_plot %>% add_trace(x = ~Recovered, y = ~Country.Region, type = 'bar',
+                                               text = "Recovered", textposition = 'auto',
+                                               name="Recovered"
+                                               # marker = list(color = 'rgb(58,200,225)',
+                                               #               line = list(color = 'rgb(8,48,107)', width = 1.5))
+                                               )
+restworld_plot <- restworld_plot %>% layout(title = "China-Italy-Rest of the World",
+                      barmode = 'group',showlegend = TRUE,
+                      xaxis = list(title = ""),
+                      yaxis = list(title = "")) 
+
+restworld_plot
+```
+
+Treemap
+========================================
+
+-------------------------------------
+### ***TreeMap on Number of cases around the world***
+
+```{r}
+# Preprocessing on Treemap in R
+treemap_df=corona_15_3
+treemap_df$Province.State=ifelse(treemap_df$Province.State=="",as.character(treemap_df$Country.Region),as.character(treemap_df$Province.State))
+treemap_df=treemap_df %>% group_by(Country.Region) %>% summarise(Active=sum(Confirmed)) 
+treemap_df$label <- paste(treemap_df$Country.Region, treemap_df$Active, sep = ", ")
+
+
+# Treemap using treemap function
+p <- treemap(treemap_df,
+             index=c("label"),
+             vSize="Active",
+             type="index",
+             palette = "Set2",
+             bg.labels=c("white"),
+             align.labels=list(
+               c("center", "center"), 
+               c("right", "bottom"))
+)            
+
+inter <- d3tree2( p ,  rootname = "Active Cases Tree Map" )
+inter
+```
+
+ShinyApp
+========================================
+
+-------------------------------------
+### ***ShinyApp on all countries***
+
+```{r}
+Country_stack_barplot=All_countries_Recovered
+Country_stack_barplot$Last_Update=as.Date(Country_stack_barplot$Last_Update, "%m-%d-%y")
+Country_stack_barplot$Country.Region=gsub("Mainland ","",Country_stack_barplot$Country.Region)
+# Used plotly library to create Bar plot
+Country_bar_fig <- plot_ly(Country_stack_barplot[Country_stack_barplot$Country.Region=='China',], 
+                           x = ~Last_Update, y = ~Total_Cases, 
+                           type = 'bar', name =~Country.Region ,color = ~Country.Region)
+Country_bar_fig <- Country_bar_fig %>% layout(yaxis = list(title = 'Death Count'), barmode = 'stack')
+Country_bar_fig
+
+ui_func <- fluidPage(
+  # Giving the title for the App
+  titlePanel("Coronavirus Data Visualisations"),
+  
+  # SidebarLayout is helpful to define the input and output section of the UI
+  sidebarLayout(
+    
+    # SidebarPanel is used to define the input panel on UI
+    sidebarPanel(
+      
+      # Defines the radio button on UI
+      radioButtons("type", "Case type:",
+                   c("Confirmed"="Total_Confirmed",
+                     "Death"="Total_Death",
+                     "Recovered"="Total_Recovered")),
+      
+      # Defines the dropdown option on UI
+      selectInput('x', 'Country Selection', unique(Country_stack_barplot['Country.Region']),"China"),
+    ),
+    
+    # MainPanel is used to display Output of the plots selected from the input section i.e. SiderPanel
+    mainPanel(
+      # Used to generate tabs in the output section of the UI
+      tabsetPanel(type = "tabs",
+                  tabPanel("Stack Bar Plot", plotlyOutput("Stack_Barplot"))
+      )
+      
+    )
+  )
+)
+
+server_func <- function(input, output) {
+  # Using the renderPlot function of the ShinyApp, we will generate plots and assign this value
+  # to the output of panel Stack_Barplot
+  output$Stack_Barplot <- renderPlotly({
+    
+    if(input$type=="Total_Confirmed"){
+      Country_bar_fig <- plot_ly(Country_stack_barplot[Country_stack_barplot$Country.Region==input$x,],
+                                 x = ~Last_Update, y = ~Total_Cases,
+                                 type = 'bar', name =~Country.Region ,color = ~Country.Region)
+      Country_bar_fig <- Country_bar_fig %>% layout(yaxis = list(title = 'Death Count'), barmode = 'stack')
+      Country_bar_fig
+    }
+    # 
+    else if(input$type=="Total_Death"){
+      Country_bar_fig <- plot_ly(Country_stack_barplot[Country_stack_barplot$Country.Region==input$x,],
+                                 x = ~Last_Update, y = ~Total_Death,
+                                 type = 'bar', name =~Country.Region ,color = ~Country.Region)
+      Country_bar_fig <- Country_bar_fig %>% layout(yaxis = list(title = 'Death Count'), barmode = 'stack')
+      Country_bar_fig
+    }
+    
+    else if(input$type=="Total_Recovered"){
+      Country_bar_fig <- plot_ly(Country_stack_barplot[Country_stack_barplot$Country.Region==input$x,],
+                                 x = ~Last_Update, y = ~Total_Recovered,
+                                 type = 'bar', name =~Country.Region ,color = ~Country.Region)
+      Country_bar_fig <- Country_bar_fig %>% layout(yaxis = list(title = 'Death Count'), barmode = 'stack')
+      Country_bar_fig
+    }
+    else {
+      print("test")
+    }
+      
+  })
+}
+shinyApp(ui_func, server_func)
+```
